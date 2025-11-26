@@ -2,7 +2,7 @@ import express, { Request, Response, NextFunction } from 'express';
 import * as path from 'path';
 
 import { BrowserManager } from './browser-manager';
-import { NetworkMonitor } from './network-monitor';
+import { ActivityRecorder } from './activity-recorder';
 import { ScriptManager } from './script-manager';
 import { ScreenshotManager } from './screenshot-manager';
 import type {
@@ -17,8 +17,8 @@ import type {
   ScrollOptions,
   KeyboardOptions,
   SaveScriptOptions,
-  NetworkCaptureOptions,
-  NetworkLogFilter,
+  ActivityType,
+  ActivityFilter,
 } from './types';
 
 // ============ Configuration ============
@@ -32,12 +32,12 @@ const config: ServerConfig = {
 // ============ Initialize Services ============
 
 const browserManager = new BrowserManager();
-const networkMonitor = new NetworkMonitor();
+const activityRecorder = new ActivityRecorder();
 const scriptManager = new ScriptManager(config.scriptsDir);
 const screenshotManager = new ScreenshotManager(config.screenshotsDir);
 
 browserManager.setOnPageCreated((page) => {
-  networkMonitor.attach(page);
+  activityRecorder.attach(page);
 });
 
 // ============ Express App ============
@@ -70,7 +70,7 @@ app.get('/status', (_req: Request, res: Response) => {
     browser: status.hasBrowser,
     page: status.hasPage,
     currentUrl: status.currentUrl,
-    network: networkMonitor.getState(),
+    recording: activityRecorder.getState(),
     screenshotsDir: screenshotManager.getDirectory(),
     scriptsDir: config.scriptsDir,
   });
@@ -210,67 +210,88 @@ app.post('/scroll', asyncHandler(async (req: Request, res: Response) => {
   res.json({ success: true });
 }));
 
-// ============ Network Monitoring Endpoints ============
+// ============ Activity Recording Endpoints ============
 
-app.post('/network/start', (_req: Request, res: Response) => {
-  const { captureBody = false } = _req.body as NetworkCaptureOptions;
-  networkMonitor.start(captureBody);
+// Start recording (recording is auto-started by default)
+app.post('/activity/start', (_req: Request, res: Response) => {
+  const { captureNetworkBodies = false } = _req.body as { captureNetworkBodies?: boolean };
+  activityRecorder.start({ captureNetworkBodies });
   res.json({
     success: true,
-    message: 'Network capture started',
-    captureBody,
+    message: 'Recording started',
+    state: activityRecorder.getState(),
   });
 });
 
-app.post('/network/stop', (_req: Request, res: Response) => {
-  const entriesCaptured = networkMonitor.stop();
+// Stop recording
+app.post('/activity/stop', (_req: Request, res: Response) => {
+  const entriesCaptured = activityRecorder.stop();
   res.json({
     success: true,
-    message: 'Network capture stopped',
+    message: 'Recording stopped',
     entriesCaptured,
   });
 });
 
-app.get('/network/status', (_req: Request, res: Response) => {
-  res.json(networkMonitor.getState());
+// Get recording state
+app.get('/activity/status', (_req: Request, res: Response) => {
+  res.json({ success: true, ...activityRecorder.getState() });
 });
 
-app.get('/network/log', (req: Request, res: Response) => {
-  const filter: NetworkLogFilter = {
-    type: req.query.type as NetworkLogFilter['type'],
-    resourceType: req.query.resourceType as string,
-    urlPattern: req.query.urlPattern as string,
-    method: req.query.method as string,
-    status: req.query.status ? Number(req.query.status) : undefined,
-    limit: req.query.limit ? Number(req.query.limit) : 1000,
-    offset: req.query.offset ? Number(req.query.offset) : 0,
-  };
+// Quick status check - ideal for polling to see if anything happened
+app.get('/activity/check', (req: Request, res: Response) => {
+  const since = req.query.since ? Number(req.query.since) : undefined;
+  const status = activityRecorder.getQuickStatus(since);
+  res.json({ success: true, ...status });
+});
 
-  const { total, entries } = networkMonitor.getEntries(filter);
+// Poll for new activity since watermark - THE KEY ENDPOINT
+// Use this between commands to see what happened
+app.get('/activity/poll', (req: Request, res: Response) => {
+  const since = req.query.since ? Number(req.query.since) : 0;
+  const typesParam = req.query.types as string | undefined;
+  const types = typesParam ? typesParam.split(',') as ActivityType[] : undefined;
+
+  const result = activityRecorder.poll(since, types);
   res.json({
     success: true,
-    total,
-    offset: filter.offset,
-    limit: filter.limit,
-    returned: entries.length,
-    entries,
+    ...result,
   });
 });
 
-app.get('/network/summary', (_req: Request, res: Response) => {
-  res.json({ success: true, ...networkMonitor.getSummary() });
+// Get activity entries with filtering
+app.get('/activity/log', (req: Request, res: Response) => {
+  const filter: ActivityFilter = {
+    since: req.query.since ? Number(req.query.since) : undefined,
+    types: req.query.types ? (req.query.types as string).split(',') as ActivityType[] : undefined,
+    limit: req.query.limit ? Number(req.query.limit) : 1000,
+  };
+
+  const result = activityRecorder.getEntries(filter);
+  res.json({
+    success: true,
+    ...result,
+  });
 });
 
-app.delete('/network/log', (_req: Request, res: Response) => {
-  const cleared = networkMonitor.clear();
+// Get activity summary
+app.get('/activity/summary', (_req: Request, res: Response) => {
+  res.json({ success: true, ...activityRecorder.getSummary() });
+});
+
+// Clear activity log
+app.delete('/activity/log', (_req: Request, res: Response) => {
+  const cleared = activityRecorder.clear();
   res.json({ success: true, cleared });
 });
 
-app.get('/network/har', (_req: Request, res: Response) => {
-  const har = networkMonitor.exportHar();
-  res.setHeader('Content-Type', 'application/json');
-  res.setHeader('Content-Disposition', 'attachment; filename="network.har"');
-  res.json(har);
+// Configure auto-start behavior
+app.post('/activity/config', (_req: Request, res: Response) => {
+  const { autoStart } = _req.body as { autoStart?: boolean };
+  if (autoStart !== undefined) {
+    activityRecorder.setAutoStart(autoStart);
+  }
+  res.json({ success: true, state: activityRecorder.getState() });
 });
 
 // ============ Static Files ============
@@ -318,14 +339,16 @@ function printEndpoints(): void {
   console.log('  POST /hover                     - Hover element {selector}');
   console.log('  POST /scroll                    - Scroll page {x?, y?}');
   console.log('');
-  console.log('Network Monitoring:');
-  console.log('  POST /network/start             - Start capture {captureBody?}');
-  console.log('  POST /network/stop              - Stop capture');
-  console.log('  GET  /network/status            - Capture status');
-  console.log('  GET  /network/log               - Get log (filters: type, resourceType, urlPattern, method, status, limit, offset)');
-  console.log('  GET  /network/summary           - Get traffic summary');
-  console.log('  DEL  /network/log               - Clear log');
-  console.log('  GET  /network/har               - Export as HAR');
+  console.log('Activity Recording (auto-starts, captures network + console + errors):');
+  console.log('  GET  /activity/poll?since=N     - Poll new events since watermark N (KEY ENDPOINT)');
+  console.log('  GET  /activity/check?since=N    - Quick check if anything happened');
+  console.log('  GET  /activity/log              - Get activity log (filters: since, types, limit)');
+  console.log('  GET  /activity/summary          - Get activity summary');
+  console.log('  GET  /activity/status           - Recording state');
+  console.log('  POST /activity/start            - Start recording {captureNetworkBodies?}');
+  console.log('  POST /activity/stop             - Stop recording');
+  console.log('  POST /activity/config           - Configure {autoStart?}');
+  console.log('  DEL  /activity/log              - Clear log');
   console.log('');
 }
 

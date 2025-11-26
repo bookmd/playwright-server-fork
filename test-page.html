@@ -347,6 +347,21 @@
     <div id="api-result" style="background: #f8f9fa; padding: 15px; border-radius: 4px; font-family: monospace; font-size: 12px; max-height: 200px; overflow-y: auto; white-space: pre-wrap;">API results will appear here...</div>
   </div>
 
+  <!-- Async Activity Testing Section -->
+  <div class="section">
+    <h2>Async Activity Testing</h2>
+    <p>Test various async behaviors that happen between commands:</p>
+    <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 15px;">
+      <button id="delayed-fetch" class="success">Delayed Fetch (2s)</button>
+      <button id="periodic-fetch">Periodic Fetches (3x)</button>
+      <button id="console-burst">Console Burst</button>
+      <button id="trigger-error" class="danger">Trigger Error</button>
+      <button id="show-alert">Show Alert</button>
+      <button id="websocket-sim">WebSocket Sim</button>
+    </div>
+    <div id="async-status" style="background: #e9ecef; padding: 10px; border-radius: 4px; font-size: 13px;">Async status: idle</div>
+  </div>
+
   <!-- Modal Section -->
   <div class="section">
     <h2>Modal Dialog</h2>
@@ -546,6 +561,82 @@
 
     document.getElementById('fetch-error').addEventListener('click', () => {
       fetchAndDisplay('https://jsonplaceholder.typicode.com/nonexistent/404');
+    });
+
+    // Async Activity Testing
+    const asyncStatus = document.getElementById('async-status');
+
+    document.getElementById('delayed-fetch').addEventListener('click', () => {
+      asyncStatus.textContent = 'Async status: waiting 2 seconds before fetch...';
+      log('Starting delayed fetch (will happen in 2 seconds)');
+      setTimeout(async () => {
+        console.log('[Async] Delayed fetch starting now');
+        asyncStatus.textContent = 'Async status: fetching...';
+        await fetchAndDisplay('https://jsonplaceholder.typicode.com/todos/2');
+        asyncStatus.textContent = 'Async status: delayed fetch complete';
+        console.log('[Async] Delayed fetch completed');
+      }, 2000);
+    });
+
+    document.getElementById('periodic-fetch').addEventListener('click', () => {
+      let count = 0;
+      asyncStatus.textContent = 'Async status: starting periodic fetches...';
+      log('Starting periodic fetches (3 requests, 1 second apart)');
+      const interval = setInterval(async () => {
+        count++;
+        console.log(`[Periodic] Fetch ${count}/3 starting`);
+        asyncStatus.textContent = `Async status: periodic fetch ${count}/3`;
+        await fetchAndDisplay(`https://jsonplaceholder.typicode.com/todos/${count}`);
+        if (count >= 3) {
+          clearInterval(interval);
+          asyncStatus.textContent = 'Async status: periodic fetches complete';
+          console.log('[Periodic] All fetches completed');
+        }
+      }, 1000);
+    });
+
+    document.getElementById('console-burst').addEventListener('click', () => {
+      asyncStatus.textContent = 'Async status: generating console messages';
+      log('Generating console burst');
+      console.log('[Console Test] Regular log message');
+      console.info('[Console Test] Info message');
+      console.warn('[Console Test] Warning message');
+      console.error('[Console Test] Error message (not a real error)');
+      console.debug('[Console Test] Debug message');
+      console.log('[Console Test] Object:', { key: 'value', nested: { a: 1, b: 2 } });
+      console.log('[Console Test] Array:', [1, 2, 3, 'four', { five: 5 }]);
+      asyncStatus.textContent = 'Async status: console burst complete';
+    });
+
+    document.getElementById('trigger-error').addEventListener('click', () => {
+      asyncStatus.textContent = 'Async status: triggering error...';
+      log('Triggering JavaScript error');
+      setTimeout(() => {
+        // This will throw a real error that the activity recorder should catch
+        throw new Error('Test error triggered intentionally for activity recording');
+      }, 100);
+    });
+
+    document.getElementById('show-alert').addEventListener('click', () => {
+      asyncStatus.textContent = 'Async status: showing alert';
+      log('Showing alert dialog');
+      alert('This is a test alert! The activity recorder should capture this dialog.');
+      asyncStatus.textContent = 'Async status: alert dismissed';
+    });
+
+    document.getElementById('websocket-sim').addEventListener('click', () => {
+      asyncStatus.textContent = 'Async status: simulating websocket activity';
+      log('Simulating WebSocket-like periodic updates');
+      let msgCount = 0;
+      const ws = setInterval(() => {
+        msgCount++;
+        console.log(`[WebSocket Sim] Message ${msgCount}: ${JSON.stringify({ type: 'update', data: Math.random() })}`);
+        if (msgCount >= 5) {
+          clearInterval(ws);
+          asyncStatus.textContent = 'Async status: websocket simulation complete';
+          console.log('[WebSocket Sim] Connection closed');
+        }
+      }, 500);
     });
 
     // Log initial state
